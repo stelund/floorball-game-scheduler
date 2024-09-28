@@ -2,3 +2,4 @@ fire
 icalendar
 black
 pytz
+pyYAML
