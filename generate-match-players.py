@@ -7,6 +7,7 @@ import datetime
 import random
 import pytz
 import yaml
+import unicodedata
 from dataclasses import dataclass, field
 
 
@@ -60,7 +61,7 @@ class Player:
     @property
     def small_games_count(self):
         return sum((1 for g in self.games if g.player_count == 11))
-            
+
     @property
     def large_games_count(self):
         return sum((1 for g in self.games if g.player_count == 16))
@@ -68,7 +69,6 @@ class Player:
     @property
     def cell_ref(self):
         return f"=A{self.number}"
-            
 
 
 @dataclass
@@ -103,15 +103,17 @@ class Game:
         return self.start_date.isocalendar()[1] == other.start_date.isocalendar()[1]
 
     def setup(self, pools):
-        print("setup match", self.year)
         for pool_name, count in self.pool_counts:
-            print(pool_name)
             players = set(pools[pool_name])
             new = set()
 
             def add_players(nominated):
                 nominated = list(nominated)
-                while len(new) != count and len(self.players) != self.player_count and nominated:
+                while (
+                    len(new) != count
+                    and len(self.players) != self.player_count
+                    and nominated
+                ):
                     p = random.choice(nominated)
                     nominated.remove(p)
                     self.players.add(p)
@@ -120,13 +122,14 @@ class Game:
                     p.games.append(self)
                 print("added players", new, count, players)
 
-            while len(new) != count and players and len(self.players) != self.player_count:
-                print("WHILE", len(new), count, players)
+            while (
+                len(new) != count and players and len(self.players) != self.player_count
+            ):
                 candidates = get_least_played_players(players - set(self.players))
                 if len(self.players) < 2 and only_trainer_kids(candidates):
                     candidates = only_trainer_kids(candidates)
 
-                print(pool_name, candidates, new, count)
+                # print(pool_name, candidates, new, count)
 
                 priority_candidates = (
                     get_players_with_least_home_games(candidates)
@@ -146,12 +149,11 @@ class Game:
 
                 if priority_candidates:
                     add_players(priority_candidates)
-                    print("PRIO", priority_candidates)
                     continue
 
                 add_players(candidates)
 
-            print(pool_name, count, new)
+            # print(pool_name, count, new)
 
     def setup_old(self, players):
         def add_players(nominated):
@@ -237,17 +239,36 @@ def only_trainer_kids(players: set[Player]) -> set[Player]:
     return {p for p in players if p.is_trainer_kid}
 
 
+def load_previous_games(games: list[Game]):
+    with open("previous_games.yaml", "r") as fp:
+        previous_games = yaml.safe_load(fp)
+
+    for game in games:
+        key = f"{game.start_date.strftime('%Y-%m-%d %H:%M')} {game.location}"
+        previous_players = previous_games.pop(key, [])
+        for player_name in previous_players:
+            game.players.add(Player(player_name, "unknown"))
+
+
+    if previous_games:
+        print(f"Didnt fint previous game {''.join([k for k in previous_games])}")
+        sys.exit(1)
+
+
 def load_calendar(calendar="calendar.ical"):
     games = []
     tz_sweden = pytz.timezone("Europe/Stockholm")
-    now = pytz.utc.localize(datetime.datetime.now())
+    start_of_season = datetime.datetime(2024, 9, 25, tzinfo=tz_sweden)
+    end_of_season = datetime.datetime(2025, 1, 1, tzinfo=tz_sweden)
+
     with open(calendar, "r") as fp:
         gcal = icalendar.Calendar.from_ical(fp.read())
         for component in gcal.walk():
             if component.name == "VEVENT" and "Match" in component.get("summary"):
-                if component.get("dtstart").dt < now or component.get(
-                    "dtstart"
-                ).dt > datetime.datetime(2025, 1, 1, tzinfo=tz_sweden):
+                if (
+                    component.get("dtstart").dt < start_of_season
+                    or component.get("dtstart").dt > end_of_season
+                ):
                     continue
 
                 year = int(re.findall(r"20\d\d", component.get("summary"))[0])
@@ -256,7 +277,7 @@ def load_calendar(calendar="calendar.ical"):
                     Game(
                         component.get("dtstart").dt,
                         component.get("dtend").dt,
-                        str(component.get("location")),
+                        str(component.get("location")).strip(),
                         year=year,
                     )
                 )
@@ -265,20 +286,22 @@ def load_calendar(calendar="calendar.ical"):
 
 def describe_game(game: Game):
     print(
-        f"{game.start_date.strftime('%Y-%m-%d %H:%M')}: {game.location} players: {len(game.players)}"
+        f"{game.start_date.strftime('%Y-%m-%d %H:%M')}: {game.location} spelare: {len(game.players)}"
     )
     only_trainer_kids_count = sum([1 for p in game.players if p.is_trainer_kid])
     pools = collections.defaultdict(set)
     for p in game.players:
         pools[p.pool].add(p)
 
-    print(f"trainer kids: {only_trainer_kids_count}", end=" ")
+    print(f"tränarbarn: {only_trainer_kids_count}", end=" ")
     for pool, players in sorted(pools.items(), key=lambda x: x[0]):
         print(f"{pool}: {len(players)}", end=" ")
     print()
+    for p in game.players:
+        print(p.name)
 
 
-def main(spelare=23):
+def main(csv=False):
     with open("players.yaml", "r") as fp:
         pools: dict[str:Player] = {
             pool: {Player(p, pool) for p in players}
@@ -290,22 +313,29 @@ def main(spelare=23):
     }
     print("POOLS", pools)
 
-    # players = set(Player(i) for i in range(1, spelare + 1))
     players = set()
     for p in pools.values():
         players.update(p)
-    print("PLAYERS", players)
-    print()
     games = load_calendar()
+    load_previous_games(games)
     for game in games:
         game.setup(pools)
 
+    if csv:
+        print("Spelare,Matcher,Hemma matcher,Borta matcher,Matcher samma helg,6-manna,5-manna")
     for p in sorted(list(players)):
-        print(
-            f"{str(p):<30} matcher: {p.games_count} hemma matcher: {p.home_games_count} "
-            f"borta matcher: {p.away_games_count} matcher samma helg: {p.same_weekend_games_count} "
-            f"femmanna: {p.large_games_count} fyrmanna: {p.small_games_count}"
-        )
+        if csv:
+            print(
+                f"{str(p)},{p.games_count},{p.home_games_count},"
+                f"{p.away_games_count},{p.same_weekend_games_count},"
+                f"{p.large_games_count},{p.small_games_count}"
+            )
+        else:
+            print(
+                f"{str(p):<30} matcher: {p.games_count} hemma matcher: {p.home_games_count} "
+                f"borta matcher: {p.away_games_count} matcher samma helg: {p.same_weekend_games_count} "
+                f"6-manna: {p.large_games_count} 5-manna: {p.small_games_count}"
+            )
 
     for g in games:
         describe_game(g)
