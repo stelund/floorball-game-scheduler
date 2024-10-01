@@ -60,7 +60,7 @@ class Player:
 
     @property
     def small_games_count(self):
-        return sum((1 for g in self.games if g.player_count == 11))
+        return sum((1 for g in self.games if g.player_count == 9))
 
     @property
     def large_games_count(self):
@@ -87,14 +87,14 @@ class Game:
     def player_count(self) -> int:
         return {
             2012: 16,
-            2013: 11,
+            2013: 9,
         }[self.year]
 
     @property
     def pool_counts(self):
         pool_counts = {
-            2012: {"p12-rutin": 6, "p12-junior": 3, "p13-stark": 3, "p13-mellan": 4},
-            2013: {"p13-stark": 2, "p13-mellan": 7, "p13-junior": 2},
+            2012: {"p12-rutin": 6, "p12-junior": 3, "p13-stark": 3, "p13-mellan": 5},
+            2013: {"p13-stark": 2, "p13-mellan": 5, "p13-junior": 2},
         }[self.year]
         for pool_name, count in pool_counts.items():
             yield pool_name, count
@@ -102,25 +102,42 @@ class Game:
     def is_same_weekend(self, other):
         return self.start_date.isocalendar()[1] == other.start_date.isocalendar()[1]
 
-    def setup(self, pools):
+    def setup(self, pools, unavailabilities):
         for pool_name, count in self.pool_counts:
             players = set(pools[pool_name])
+            game_key = self.start_date.strftime("%Y-%m-%d %H:%M")
+            for p in list(players):
+                if game_key in unavailabilities.get(p.name, []):
+                    players.remove(p)
+                    continue
+
             new = set()
 
             def add_players(nominated):
                 nominated = list(nominated)
-                while (
-                    len(new) != count
-                    and len(self.players) != self.player_count
-                    and nominated
-                ):
-                    p = random.choice(nominated)
-                    nominated.remove(p)
-                    self.players.add(p)
-                    new.add(p)
-                    players.remove(p)
-                    p.games.append(self)
-                print("added players", new, count, players)
+                groups = collections.defaultdict(list)
+                if self.player_count == 9:
+                    for p in nominated:
+                        groups[p.small_games_count].append(p)
+                else:
+                    for p in nominated:
+                        groups[p.large_games_count].append(p)
+                
+                keys = sorted(list(groups.keys()))
+                for key in keys:
+                    group = groups[key] 
+                    while (
+                        len(new) != count
+                        and len(self.players) != self.player_count
+                        and group
+                    ):
+                        p = random.choice(group)
+                        group.remove(p)
+                        self.players.add(p)
+                        new.add(p)
+                        players.remove(p)
+                        p.games.append(self)
+                    #print("added players", key, new, count, players)
 
             while (
                 len(new) != count and players and len(self.players) != self.player_count
@@ -154,6 +171,7 @@ class Game:
                 add_players(candidates)
 
             # print(pool_name, count, new)
+
 
     def setup_old(self, players):
         def add_players(nominated):
@@ -249,7 +267,6 @@ def load_previous_games(games: list[Game]):
         for player_name in previous_players:
             game.players.add(Player(player_name, "unknown"))
 
-
     if previous_games:
         print(f"Didnt fint previous game {''.join([k for k in previous_games])}")
         sys.exit(1)
@@ -303,26 +320,31 @@ def describe_game(game: Game):
 
 def main(csv=False):
     with open("players.yaml", "r") as fp:
-        pools: dict[str:Player] = {
-            pool: {Player(p, pool) for p in players}
-            for pool, players in yaml.safe_load(fp).items()
-        }
+        players_data = yaml.safe_load(fp)
+    pools: dict[str:Player] = {
+        pool: {Player(p, pool) for p in players}
+        for pool, players in players_data["pools"].items()
+    }
+    unavailabilities = players_data["unavailabilities"]
 
     pools["trainer_kids"] = {
         player for pool in pools.values() for player in pool if player.is_trainer_kid
     }
-    print("POOLS", pools)
+    # print("POOLS", pools)
 
     players = set()
     for p in pools.values():
         players.update(p)
     games = load_calendar()
-    load_previous_games(games)
+    load_previous_games(games)    
     for game in games:
-        game.setup(pools)
+        print(f"================= setup {game}")
+        game.setup(pools, unavailabilities)
 
     if csv:
-        print("Spelare,Matcher,Hemma matcher,Borta matcher,Matcher samma helg,6-manna,5-manna")
+        print(
+            "Spelare,Matcher,Hemma matcher,Borta matcher,Matcher samma helg,5-manna,4-manna"
+        )
     for p in sorted(list(players)):
         if csv:
             print(
@@ -334,7 +356,7 @@ def main(csv=False):
             print(
                 f"{str(p):<30} matcher: {p.games_count} hemma matcher: {p.home_games_count} "
                 f"borta matcher: {p.away_games_count} matcher samma helg: {p.same_weekend_games_count} "
-                f"6-manna: {p.large_games_count} 5-manna: {p.small_games_count}"
+                f"5-manna: {p.large_games_count} 4-manna: {p.small_games_count}"
             )
 
     for g in games:
